@@ -76,9 +76,13 @@ All other configuration (LLM provider, model, channels, tools) is managed throug
 
 Selectable from the setup wizard's dropdown:
 
-OpenRouter, Anthropic (Claude), Google AI Studio, xAI (API key **or** SuperGrok OAuth), DeepSeek, Qwen Cloud (DashScope), GLM / Z.AI, Kimi, MiniMax (global **and** China), NVIDIA NIM, Fireworks AI, NovitaAI, Arcee AI, Step Plan, GMI Cloud, Hugging Face, GitHub Copilot, OpenCode Zen, OpenCode Go, Kilo Code, Ollama Cloud, Actual Computer, AWS Bedrock, Azure Foundry, and any OpenAI-compatible **Custom Endpoint**.
+OpenRouter, Anthropic (Claude), Google AI Studio, xAI (API key **or** SuperGrok OAuth), DeepSeek, Qwen Cloud (DashScope), GLM / Z.AI, Kimi, MiniMax (global **and** China), NVIDIA NIM, Fireworks AI, NovitaAI, Arcee AI, Step Plan, GMI Cloud, Hugging Face, GitHub Copilot, OpenCode Zen, OpenCode Go, Kilo Code, Ollama Cloud, Actual Computer, AWS Bedrock, Azure Foundry, **9Router**, **OmniRoute**, and any OpenAI-compatible **Custom Endpoint**.
+
+9Router and OmniRoute are separately deployed routing gateways, not services bundled into this image. Select either one in the setup wizard and enter the gateway's reachable OpenAI-compatible `/v1` URL, its endpoint API key, and a model or combo name. Both can remain configured at the same time; OmniRoute defaults the model field to its `auto` smart-routing alias.
 
 Every other provider Hermes supports can still be configured from the Hermes Dashboard → **Keys** tab — the wizard covers the common ones, not the limit.
+
+> **OpenCode Free:** Hermes v2026.9.21 removed the anonymous `opencode-free` provider because its upstream relay now rejects external anonymous clients. Use OpenCode Zen or OpenCode Go with the corresponding API key instead.
 
 ## Supported Channels
 
@@ -105,7 +109,11 @@ Railway Container
     └── hermes gateway     — the agent itself (Telegram, Discord, …), auto-restarted
 ```
 
-The Hermes dashboard is **never exposed directly** — it binds loopback and is reachable only through the proxy, so one login covers both UIs. The gateway is supervised: if it crashes or is OOM-killed, `server.py` restarts it with backoff, giving up only if it fails repeatedly (Railway would not restart it on its own, because `server.py` is still alive and healthy).
+The Hermes dashboard is **never exposed directly** — it binds loopback and is reachable only through the proxy, so one login covers both UIs. The gateway is supervised: if it crashes or is OOM-killed, `server.py` restarts it with backoff, giving up only if it fails repeatedly (Railway would not restart it on its own, because `server.py` is still alive and healthy). If a config save or restore respawns the dashboard while Chat is open, the terminal connection retries automatically.
+
+The image builds and verifies SQLite 3.53.4 rather than using Debian Bookworm's affected 3.40.1 library. This matches Hermes v2026.9.21's official container requirement and protects session/FTS databases from SQLite's WAL-reset defect.
+
+Hermes v2026.9.21 can serve all live named profiles from this one gateway. The template's `/setup` page remains the default-profile bootstrap/admin surface; use the native Hermes Dashboard's profile selector for named-profile configuration and pairing. Start, Stop, and Restart act on the shared gateway and therefore affect every profile it serves.
 
 Config lives on the `/data` volume at `/data/.hermes/` (`.env`, `config.yaml`, `auth.json`, sessions, pairing state) and survives redeploys. Gateway output is captured into a ring buffer and streamed to the Logs panel.
 
@@ -120,9 +128,9 @@ Open `http://localhost:8080` and log in with `admin` / `changeme`.
 
 ## Updating Hermes
 
-This template pins a specific Hermes Agent release in the `Dockerfile` (`ARG HERMES_REF`, currently `v2026.9.11`). To upgrade:
+This template pins a specific Hermes Agent release in the `Dockerfile` (`ARG HERMES_REF`, currently `v2026.9.21`). To upgrade:
 
-- **Recommended:** set a `HERMES_REF` service variable in Railway to any upstream [release tag](https://github.com/NousResearch/hermes-agent/releases) (e.g. `v2026.9.11`), then redeploy. It's passed in as a Docker build arg and overrides the Dockerfile default — no code change needed.
+- **Recommended:** set a `HERMES_REF` service variable in Railway to any upstream [release tag](https://github.com/NousResearch/hermes-agent/releases) (e.g. `v2026.9.21`), then redeploy. It's passed in as a Docker build arg and overrides the Dockerfile default — no code change needed.
 - **Or** bump `ARG HERMES_REF` in the `Dockerfile` and redeploy.
 
 The "Update" button inside the Hermes dashboard is a **no-op on Railway** (it detects a container install and refuses) — the image is immutable, so a runtime self-update wouldn't survive a redeploy. Bump `HERMES_REF` and redeploy instead. When jumping releases, re-check that the Dockerfile's install extras still match upstream's `pyproject.toml`.
