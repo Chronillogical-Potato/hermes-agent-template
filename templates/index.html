@@ -1839,6 +1839,41 @@
         </div>
 
         <div class="changelog-entry major">
+          <div class="changelog-date">September 23, 2026</div>
+          <div class="changelog-meta">
+            <span class="meta-box">
+              <span class="meta-label">Git branch</span>
+              <code>release/v2026.9.21/1</code>
+            </span>
+            <span class="meta-box version">
+              <span class="meta-label">Hermes compatible version</span>
+              <code>v2026.9.21</code>
+            </span>
+          </div>
+
+          <div class="changelog-group">Hermes update</div>
+          <ul class="changelog-list">
+            <li>Updated <strong>Hermes Agent to v2026.9.21</strong> (from v2026.9.11).</li>
+            <li><strong>One gateway can now run every profile on this deployment.</strong> When you have named profiles, configure and pair them from the native Hermes Dashboard's profile selector. This Setup panel remains for the default profile, and its Start/Stop/Restart buttons affect the shared gateway and every profile it serves.</li>
+            <li><strong>Temporary provider outages recover automatically.</strong> After the normal retries and backup providers are exhausted, Hermes waits and tries again with a visible countdown instead of ending the turn immediately.</li>
+            <li><strong>Large conversations compact sooner</strong> so million-token context windows do not grow to roughly half a million tokens before their first summary.</li>
+            <li><strong>More capabilities arrive automatically:</strong> iPhone HEIC/HEIF images, GPT-Live voice sessions, OpenAI-native web search, OpenRouter video generation, faster lazy MCP startup and n8n's official browser-OAuth connection.</li>
+            <li><strong>OpenCode Free was retired upstream.</strong> If your model used <code>opencode-free</code>, switch to OpenCode Zen or OpenCode Go and enter that service's API key. We do not switch it automatically because the replacements require an account and may cost money.</li>
+            <li><strong>Fresh deployments show model reasoning by default.</strong> Existing deployments keep their saved choice; toggle it any time with <code>/reasoning show</code> or <code>/reasoning hide</code>.</li>
+          </ul>
+
+          <div class="changelog-group">Changes to support upstream updates</div>
+          <ul class="changelog-list">
+            <li><strong>Valid restores are no longer rejected over disposable databases.</strong> The backup checker now agrees with every cache and browser-profile folder Hermes deliberately leaves out.</li>
+            <li><strong>A partial manual backup is still downloadable.</strong> If Hermes cannot include one or more files, you receive the useful remainder with a clear warning; an automatic safety snapshot before Restore remains strictly all-or-nothing.</li>
+            <li><strong>Temporary browser, PTY and Python files stay off your storage volume.</strong> They use the container's temporary disk and disappear on redeploy.</li>
+            <li><strong>Session history now uses the fixed SQLite runtime from Hermes' official image.</strong> This avoids an upstream WAL-reset corruption bug and makes the new full-text-search health check pass on fresh and restored databases.</li>
+            <li><strong>Dashboard restarts wait for database and Chat cleanup.</strong> Save, Restore and Restart now allow enough time for Hermes to finish closing its workers instead of force-killing them after five seconds.</li>
+            <li><strong>An open Chat reconnects after a dashboard restart.</strong> Its terminal connection retries automatically instead of getting stuck on an expired local token; deployments with the public auth gate continue to use fresh one-time WebSocket tickets.</li>
+          </ul>
+        </div>
+
+        <div class="changelog-entry major">
           <div class="changelog-date">September 12, 2026</div>
           <div class="changelog-meta">
             <span class="meta-box">

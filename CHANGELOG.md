@@ -11,6 +11,72 @@ release.
 
 ---
 
+## release/v2026.9.21/1 — September 23, 2026
+**Hermes v2026.9.21 · major (Hermes upgrade, from v2026.9.11)**
+
+### Hermes update
+- Hermes Agent **v2026.9.11 → v2026.9.21** (package 0.21.2 → 0.21.4).
+- **One gateway now serves every live profile on the host when the migration
+  preflight says that is safe.** The former `gateway.multiplex_profiles: false`
+  opt-out is retired. This template's `/setup` panel remains the default-profile
+  bootstrap UI; use the native Hermes dashboard's profile selector for named
+  profile configuration and pairing. Start/Stop/Restart controls the shared
+  gateway and therefore affects every served profile.
+- **Temporary provider outages recover for longer instead of ending the turn
+  immediately.** After ordinary retries and fallbacks are exhausted, Hermes now
+  performs up to five bounded recovery cycles with a visible countdown.
+- **Very large conversations compact sooner.** The default absolute compression
+  ceiling is now 256K tokens, preventing million-token contexts from growing to
+  roughly 500K before their first compaction.
+- **New capabilities:** HEIF/HEIC/AVIF image decoding, GPT-Live voice-session
+  negotiation, OpenAI-native web search through Codex OAuth, OpenRouter video
+  generation, lazy MCP startup, and n8n's official HTTP/OAuth MCP integration.
+- **The anonymous `opencode-free` provider was removed upstream** because its
+  relay now rejects external anonymous clients. Existing users must select
+  OpenCode Zen or OpenCode Go and provide that service's API key; the template
+  does not auto-migrate to a credentialed, potentially paid provider.
+- **Fresh installs show model reasoning by default.** Existing volumes keep
+  their saved `display.show_reasoning` value, normally `false`; no user setting
+  is overwritten.
+
+### Changes to support upstream updates
+- **Backup completeness now mirrors all of Hermes' exclusions.** v2026.9.21
+  excludes root/profile `browser_profiles/` plus regenerable `cache/*` trees,
+  while retaining user media and citation evidence. Without the same rules,
+  this template could reject a valid pre-restore safety snapshot because a
+  disposable database was deliberately absent.
+- **Partial manual backups remain downloadable.** Hermes now keeps a partial
+  ZIP but exits 1. The download endpoint accepts that exact result only when
+  the archive is readable, returns it with a warning, and keeps restore safety
+  snapshots fail-closed.
+- **Generic temporary files stay on ephemeral container disk.** Hermes now
+  defaults `TMPDIR`/`TMP`/`TEMP` to `$HERMES_HOME/cache/scratch`; the template
+  pins `TMPDIR=/tmp`, matching its existing terminal-scratch policy and keeping
+  disposable spools off the Railway volume.
+- **SQLite is pinned to the fixed 3.53.4 runtime used by upstream's official
+  image.** Bookworm's 3.40.1 contains the WAL-reset corruption bug and makes
+  Hermes' new FTS write-health probe fail even on a fresh database. The image
+  build now verifies the version and FTS5 trigram support before publishing.
+- **Dashboard restarts get a 15-second graceful shutdown window.** Hermes now
+  joins its SQLite reconciliation worker and closes hosted-room/Chat PTY state
+  during teardown; the former five-second wrapper deadline could SIGKILL it
+  mid-cleanup.
+- **Open Chat pages recover across a dashboard restart.** The loopback
+  dashboard token now stays stable for the wrapper process lifetime, and the
+  proxy translates Hermes' service-restart close into the reconnect signal its
+  SPA understands. Public/gated mode still mints fresh single-use WS tickets.
+
+### Verified unchanged (audited, no action)
+Exact gateway/dashboard/backup/import argv and dispatch · WebSocket routes used
+by the browser dashboard · loopback Host/Origin gates · dashboard password
+login, cookies and WS tickets · `/api/model/set` payload · pairing directory
+resolution and pending/approved schema · gateway PID/lock/socket records · exit
+codes 75/78 and container markers · Docker install-method refusal · all nine
+named install extras · `web_dist` and `HERMES_TUI_DIR` build outputs · xAI OAuth
+device flow and auth-store layout.
+
+---
+
 ## release/v2026.9.11/1 — September 12, 2026
 **Hermes v2026.9.11 · major (Hermes upgrade, from v2026.8.31)**
 

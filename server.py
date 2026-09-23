@@ -680,6 +680,16 @@ def hermes_dashboard_auth_secret() -> str:
     return secret
 
 
+# Hermes otherwise generates a new legacy SPA/WS token for every dashboard
+# process. Config saves and restores deliberately respawn that process while an
+# existing Chat page is still open; the page then retries with its old token and
+# every /api/pty + /api/events upgrade is rejected with 403 until the user
+# reloads. Keep the token stable only for this wrapper process's lifetime. It
+# still rotates on every container restart, and gated/public dashboards reject
+# this legacy token in favour of their normal single-use WS tickets.
+_DASHBOARD_SESSION_TOKEN = secrets.token_urlsafe(32)
+
+
 def hermes_dashboard_public_url() -> str:
     """Public origin hermes should build OAuth redirect_uris from, or ""."""
     domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "").strip()
@@ -726,6 +736,7 @@ DASHBOARD_TRUST_KEYS = (
     "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD",
     "HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH",
     "HERMES_DASHBOARD_BASIC_AUTH_SECRET",
+    "HERMES_DASHBOARD_SESSION_TOKEN",
 )
 
 # Only a restored or hand-edited .env can carry these, so .env is healed once at
@@ -778,6 +789,16 @@ def build_hermes_env() -> dict[str, str]:
     # v2026.8.27 behaviour. Must be an existing absolute dir or hermes ignores it
     # (/tmp always exists here).
     env.setdefault("TERMINAL_TEMP_DIR", "/tmp")
+    # v2026.9.21 widened that persistent-scratch default beyond the terminal:
+    # hermes_bootstrap now points generic TMPDIR/TMP/TEMP at
+    # $HERMES_HOME/cache/scratch for EVERY hermes entry point when none is set.
+    # On this Railway image /tmp is ordinary ephemeral container disk, while
+    # HERMES_HOME is the durable volume; browser spools, PTY probes and Python
+    # tempfile users therefore belong in /tmp for the same reason terminal
+    # sandboxes do. Setting only TMPDIR is sufficient: upstream treats any
+    # user-supplied temp variable as authoritative and leaves all three alone.
+    # setdefault preserves an explicit Railway/.env override.
+    env.setdefault("TMPDIR", "/tmp")
     # Pin every hermes subprocess to the root profile. hermes_cli/main.py's
     # _apply_profile_override() runs at IMPORT — before argparse — so the
     # `--external-supervisor` flag we pass (which only sets
@@ -823,6 +844,20 @@ def build_hermes_env() -> dict[str, str]:
         public_url = hermes_dashboard_public_url()
         if public_url:
             env["HERMES_DASHBOARD_PUBLIC_URL"] = public_url
+    return env
+
+
+def build_dashboard_env() -> dict[str, str]:
+    """Build the dashboard env with a token stable across in-container respawns.
+
+    Keep this dashboard-only: the gateway neither needs nor should inherit the
+    browser's loopback session credential. An inbound Railway/.env value is
+    intentionally overwritten; this wrapper owns both ends of that trust
+    boundary, and `_sanitize_env_file()` prevents Hermes' override=True dotenv
+    load from replacing it after spawn.
+    """
+    env = build_hermes_env()
+    env["HERMES_DASHBOARD_SESSION_TOKEN"] = _DASHBOARD_SESSION_TOKEN
     return env
 
 
@@ -1688,7 +1723,7 @@ class Dashboard:
                 # so the PTY child spawns instantly on first chat connect.
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
-                env=build_hermes_env(),
+                env=build_dashboard_env(),
             )
             print(f"[dashboard] spawned pid={self.proc.pid} → {HERMES_DASHBOARD_URL}", flush=True)
             # One line describing the auth shape this dashboard was started
@@ -1731,7 +1766,13 @@ class Dashboard:
             return
         self.proc.terminate()
         try:
-            await asyncio.wait_for(self.proc.wait(), timeout=5)
+            # v2026.9.21 joins its non-daemon state.db reconciliation worker on
+            # shutdown, after stopping hosted rooms and closing attached Chat
+            # PTYs. Upstream's own dashboard process manager gives that path a
+            # 10s SIGTERM grace: killing earlier can strand a ui-tui descendant
+            # holding a deleted state.db-wal generation, which makes the next
+            # dashboard start refuse. Keep 5s of headroom over upstream's floor.
+            await asyncio.wait_for(self.proc.wait(), timeout=15)
         except asyncio.TimeoutError:
             self.proc.kill()
             await self.proc.wait()
@@ -2186,6 +2227,13 @@ BACKUP_DIR = Path(HERMES_HOME) / "backups"   # hermes' own pre-update-backup con
 PRE_RESTORE_KEEP = 3
 BACKUP_SUBPROCESS_TIMEOUT = 600  # 10 min ceiling for both `hermes backup` and `hermes import`
 
+# v2026.9.21 makes a partial archive an explicit result: the zip is kept, but
+# `hermes backup` exits 1 so unattended timers never publish it as a success.
+# The manual download endpoint intentionally still hands useful config/keys/
+# memories to the operator with a warning; the pre-restore safety snapshot
+# remains fail-closed on every non-zero rc.
+BACKUP_INCOMPLETE_RC = 1
+
 # hermes >= v2026.8.13 serializes backups across processes: `run_backup` takes a
 # flock on $HERMES_HOME/.backup.lock with a 0.25s acquire timeout and, on a
 # miss, raises SystemExit(2) after printing "another Hermes backup is already
@@ -2300,7 +2348,7 @@ def _sweep_stale_backup_tmpdirs() -> None:
 
 
 # Mirrors hermes' own _EXCLUDED_DIRS (hermes_cli/backup.py, re-verified
-# byte-identical at v2026.9.11) so _live_db_names() can never demand a database
+# byte-identical at v2026.9.21) so _live_db_names() can never demand a database
 # hermes deliberately skips. That direction matters: a false "incomplete" ABORTS
 # a restore, which is strictly worse than the gap it closes. Re-check this
 # against upstream on a bump — and check _BACKUP_EXCLUDED_ROOT_DIRS below too,
@@ -2326,19 +2374,41 @@ _BACKUP_EXCLUDED_DIRS = {
 # false "incomplete" ABORTS a restore.
 _BACKUP_EXCLUDED_ROOT_DIRS = {"models", "runtimes", "node"}
 
+# v2026.9.21 added backup-only exclusions that are root-scoped for the same
+# reason as the runtime trees above. browser_profiles is Browser Use CLI's live
+# Chromium user-data dir (locked SQLite + credentials); a skill's own nested
+# browser_profiles/ remains user data and must still be archived.
+_BACKUP_EXCLUDED_BACKUP_ROOT_DIRS = {"browser_profiles"}
+
+# cache/ now mixes regenerable scratch/catalog/browser data with durable media
+# delivered to or received from users and the grounded-citations evidence
+# ledger. Hermes archives ONLY these subdirs at the root of each profile home.
+# This mirror is deliberately positive: adding "cache" to the flat exclusions
+# would silently drop the durable directories too.
+_BACKUP_KEPT_CACHE_SUBDIRS = {
+    "images", "audio", "videos", "documents", "screenshots", "citations",
+}
+
 
 def _in_excluded_root_dir(rel: Path) -> bool:
-    """Mirror of hermes' `_in_excluded_root_dir`: top level only, plus per-profile.
+    """Mirror of hermes' `_in_excluded_root_dir`: profile-home roots only.
 
     `rel` is the path relative to HERMES_HOME, filename included — same shape
-    upstream passes, so the `>= 3` profile check lines up with theirs.
+    upstream passes. Strip ``profiles/<name>`` first so the same rules apply to
+    both the default home and every named profile without over-excluding a
+    nested skill/project directory that happens to use one of these names.
     """
     parts = rel.parts
+    if len(parts) >= 3 and parts[0] == "profiles":
+        parts = parts[2:]
     if not parts:
         return False
+    if parts[0] in _BACKUP_EXCLUDED_ROOT_DIRS or parts[0] in _BACKUP_EXCLUDED_BACKUP_ROOT_DIRS:
+        return True
     return (
-        parts[0] in _BACKUP_EXCLUDED_ROOT_DIRS
-        or (len(parts) >= 3 and parts[0] == "profiles" and parts[2] in _BACKUP_EXCLUDED_ROOT_DIRS)
+        parts[0] == "cache"
+        and len(parts) >= 2
+        and parts[1] not in _BACKUP_KEPT_CACHE_SUBDIRS
     )
 
 
@@ -2429,9 +2499,26 @@ async def api_backup_download(request: Request) -> Response:
             shutil.rmtree(tmp_dir, ignore_errors=True)
             return JSONResponse({"error": BACKUP_BUSY_MESSAGE, "output": output[-2000:]},
                                 status_code=409)
-        if rc != 0 or not zip_path.exists():
+        # rc 1 with a real zip is v2026.9.21's explicit "archive kept, but
+        # incomplete" result. It is useful for a MANUAL export and is surfaced
+        # below with a warning. All other non-zero exits remain hard failures.
+        incomplete_exit = rc == BACKUP_INCOMPLETE_RC and zip_path.exists()
+        if (rc != 0 and not incomplete_exit) or not zip_path.exists():
             shutil.rmtree(tmp_dir, ignore_errors=True)
             return JSONResponse({"error": "Backup failed", "output": output[-2000:]}, status_code=500)
+
+        # An exit-1 path is useful only if Hermes actually closed a readable
+        # archive. Parsing the central directory is cheap and prevents us from
+        # sending a truncated/corrupt file merely because it exists.
+        try:
+            with zipfile.ZipFile(zip_path) as zf:
+                zf.infolist()
+        except Exception as e:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            return JSONResponse(
+                {"error": f"Backup archive could not be read back: {e}", "output": output[-2000:]},
+                status_code=500,
+            )
 
         # Best-effort manifest entry for the restore-time version hint — never
         # fails the download if this step errors.
@@ -2448,13 +2535,22 @@ async def api_backup_download(request: Request) -> Response:
 
         filename = f"hermes-backup-{int(time.time())}.zip"
         headers = {}
+        warning_parts: list[str] = []
+        if incomplete_exit:
+            # The omitted item may be a non-DB file, which the artifact-level DB
+            # check below cannot name. Preserve that information even when every
+            # live SQLite database is present.
+            warning_parts.append("Hermes reported that one or more files could not be included")
         # Surface a partial archive instead of handing over a file the user
         # would only discover is incomplete when a restore fails. Warn rather
         # than block: config, keys and memories are still worth exporting even
         # when the session DB could not be snapshotted.
         if reason := _incomplete_backup_reason(zip_path):
-            print(f"[backup] incomplete archive — {reason}", flush=True)
-            headers["X-Backup-Warning"] = f"Backup is incomplete: {reason}."
+            warning_parts.append(reason)
+        if warning_parts:
+            warning = "; ".join(warning_parts)
+            print(f"[backup] incomplete archive — {warning}", flush=True)
+            headers["X-Backup-Warning"] = f"Backup is incomplete: {warning}."
         return FileResponse(
             zip_path,
             filename=filename,
@@ -3069,6 +3165,24 @@ PROXIED_WS_PATHS = ("/api/pty", "/api/ws", "/api/events", "/api/console", "/api/
 # agree" trap as the keepalive pairing below. A cap, not a preallocation.
 HERMES_WS_MAX_BYTES = 384 * 1024 * 1024
 
+# RFC 6455 reserves 1005/1006/1015 for local reporting; an endpoint must never
+# put them on the wire. Uvicorn sends 1012 while the dashboard shuts down for a
+# service restart, but Hermes' current SPA reconnects on 1001/1006 and treats a
+# clean 1012 as a finished Chat. Normalize all of those restart/abrupt-loss
+# cases to 1001 (server going away). Valid application codes such as 4410 (PTY
+# exited) still pass through unchanged.
+_WS_CLOSE_CODES_REQUIRING_BROWSER_RECONNECT = frozenset({1005, 1006, 1012, 1015})
+
+
+def _browser_ws_close_code(upstream_code: object) -> int:
+    try:
+        code = int(upstream_code)
+    except (TypeError, ValueError):
+        return 1001
+    if code in _WS_CLOSE_CODES_REQUIRING_BROWSER_RECONNECT or not 1000 <= code <= 4999:
+        return 1001
+    return code
+
 
 async def _ws_pump_client_to_upstream(
     client: WebSocket,
@@ -3195,14 +3309,18 @@ async def ws_proxy(websocket: WebSocket) -> None:
                 pass
     finally:
         # websockets.connect() outside `async with` doesn't auto-close;
-        # do it explicitly. Same for the client side if still open.
+        # do it explicitly. Preserve a meaningful upstream close for the SPA:
+        # in particular, dashboard shutdown is 1012 (or sometimes local 1006),
+        # both mapped to 1001 so the browser reconnects instead of treating the
+        # Chat session as intentionally finished.
+        upstream_close_code = getattr(upstream, "close_code", None)
         try:
             await upstream.close()
         except Exception:
             pass
         if websocket.client_state == WebSocketState.CONNECTED:
             try:
-                await websocket.close()
+                await websocket.close(code=_browser_ws_close_code(upstream_close_code))
             except Exception:
                 pass
 
