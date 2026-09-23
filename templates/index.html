@@ -1172,12 +1172,31 @@
             </div>
           </template>
 
+          <!-- Named OpenAI-compatible routing gateways -->
+          <template x-if="providerMap[selectedProvider]?.isRouter">
+            <div>
+              <div class="field-gap">
+                <label class="field-label">Base URL</label>
+                <input type="text"
+                       :value="vars[providerMap[selectedProvider]?.baseUrlKey]||''"
+                       @input="vars[providerMap[selectedProvider].baseUrlKey]=$event.target.value"
+                       :placeholder="providerMap[selectedProvider]?.baseUrlPlaceholder||''">
+                <p class="hint">
+                  <span x-text="providerMap[selectedProvider]?.baseUrlHint"></span>
+                  <a :href="providerMap[selectedProvider]?.docsUrl" target="_blank" rel="noopener"
+                     style="color:var(--accent2);">Setup guide ↗</a>
+                </p>
+              </div>
+            </div>
+          </template>
+
           <div class="field-gap" x-show="selectedProvider && providerMap[selectedProvider]?.key">
             <label class="field-label" x-text="providerMap[selectedProvider]?.keyLabel || 'API Key'"></label>
             <input type="password"
                    :value="selectedProvider ? (vars[providerMap[selectedProvider]?.key]||'') : ''"
                    @input="if(selectedProvider && providerMap[selectedProvider]?.key) vars[providerMap[selectedProvider].key]=$event.target.value"
                    :placeholder="selectedProvider ? (providerMap[selectedProvider]?.placeholder||'Paste your API key') : ''">
+            <p class="hint" x-show="providerMap[selectedProvider]?.keyHint" x-text="providerMap[selectedProvider]?.keyHint"></p>
             <p class="hint warn" x-show="providerKeyPrefixMismatch">
               This key doesn't start with <code x-text="providerMap[selectedProvider]?.keyPrefix"></code>.
               Hermes will ignore it and the bot won't reply — check you copied the whole key.
@@ -1216,19 +1235,20 @@
           <div class="field-gap" x-show="selectedProvider">
             <label class="field-label">LLM Model</label>
             <input type="text" :value="vars.LLM_MODEL||''" @input="vars.LLM_MODEL=$event.target.value"
-                   :placeholder="selectedProvider === 'xAI Grok (SuperGrok)' || selectedProvider === 'xAI' ? 'e.g. grok-4.3'
+                   :placeholder="providerMap[selectedProvider]?.modelPlaceholder || (selectedProvider === 'xAI Grok (SuperGrok)' || selectedProvider === 'xAI' ? 'e.g. grok-4.3'
                      : selectedProvider === 'Anthropic (Claude)' ? 'e.g. claude-sonnet-4-20250514'
                      : selectedProvider === 'AWS Bedrock' ? 'e.g. anthropic.claude-3-5-sonnet-20241022-v2:0'
                      : selectedProvider === 'Fireworks AI' ? 'e.g. accounts/fireworks/models/llama-v3p1-70b-instruct'
                      : selectedProvider === 'MiniMax' || selectedProvider === 'MiniMax (China)' ? 'e.g. MiniMax-M3'
                      : selectedProvider === 'Custom Endpoint' || selectedProvider === 'Azure Foundry' ? 'model-id as required by the endpoint'
-                     : 'e.g. openai/gpt-4o-mini  or  deepseek/deepseek-chat'">
+                     : 'e.g. openai/gpt-4o-mini  or  deepseek/deepseek-chat')">
+            <p class="hint" x-show="providerMap[selectedProvider]?.modelHint" x-text="providerMap[selectedProvider]?.modelHint"></p>
             <p class="hint" x-show="selectedProvider === 'xAI Grok (SuperGrok)' || selectedProvider === 'xAI'">e.g. <code>grok-4.3</code>, <code>grok-4.20-0309-reasoning</code></p>
             <p class="hint" x-show="selectedProvider === 'Anthropic (Claude)'">e.g. <code>claude-sonnet-4-20250514</code>, <code>claude-opus-4-20250115</code></p>
             <p class="hint" x-show="selectedProvider === 'AWS Bedrock'">e.g. <code>anthropic.claude-3-5-sonnet-20241022-v2:0</code>, <code>us.meta.llama3-2-90b-instruct-v1:0</code></p>
             <p class="hint" x-show="selectedProvider === 'Fireworks AI'">Format: <code>accounts/fireworks/models/&lt;model-id&gt;</code></p>
             <p class="hint" x-show="selectedProvider === 'MiniMax' || selectedProvider === 'MiniMax (China)'">e.g. <code>MiniMax-M3</code>, <code>MiniMax-M2.7</code></p>
-            <p class="hint" x-show="!['xAI Grok (SuperGrok)','xAI','Anthropic (Claude)','AWS Bedrock','Fireworks AI','MiniMax','MiniMax (China)','Custom Endpoint','Azure Foundry'].includes(selectedProvider) && selectedProvider">Check your provider's docs for model names. OpenRouter format: <code>provider/model-name</code></p>
+            <p class="hint" x-show="!['xAI Grok (SuperGrok)','xAI','Anthropic (Claude)','AWS Bedrock','Fireworks AI','MiniMax','MiniMax (China)','Custom Endpoint','Azure Foundry','9Router','OmniRoute'].includes(selectedProvider) && selectedProvider">Check your provider's docs for model names. OpenRouter format: <code>provider/model-name</code></p>
           </div>
         </div>
 
@@ -1298,9 +1318,13 @@
                               style="font-size:10px;font-family:var(--font-mono);background:rgba(98,114,255,.15);color:var(--accent2);padding:2px 6px;border-radius:4px;">
                           OAuth
                         </span>
-                        <span x-show="!cp.isOauth && !cp.isCustom && !cp.isBedrock && !cp.isAzure"
+                        <span x-show="!cp.isOauth && !cp.isCustom && !cp.isBedrock && !cp.isAzure && !cp.isRouter"
                               style="font-size:10px;font-family:var(--font-mono);background:rgba(63,185,80,.12);color:var(--green);padding:2px 6px;border-radius:4px;">
                           API key set
+                        </span>
+                        <span x-show="cp.isRouter"
+                              style="font-size:10px;font-family:var(--font-mono);background:rgba(88,166,255,.12);color:var(--accent2);padding:2px 6px;border-radius:4px;">
+                          Router
                         </span>
                         <span x-show="cp.isBedrock"
                               style="font-size:10px;font-family:var(--font-mono);background:rgba(255,153,0,.15);color:#f90;padding:2px 6px;border-radius:4px;">
@@ -2257,6 +2281,28 @@ function app() {
       'Kilo Code':            { key: 'KILOCODE_API_KEY',         modelKey: '_MODEL_KILOCODE_API_KEY',         placeholder: '' },
       'Ollama Cloud':         { key: 'OLLAMA_API_KEY',           modelKey: '_MODEL_OLLAMA_API_KEY',           placeholder: '' },
       'Azure Foundry':        { key: 'AZURE_FOUNDRY_API_KEY',   modelKey: '_MODEL_AZURE_FOUNDRY_API_KEY',   placeholder: '', isAzure: true },
+      '9Router':              {
+        key: 'NINEROUTER_API_KEY', modelKey: '_MODEL_NINEROUTER_API_KEY',
+        baseUrlKey: 'NINEROUTER_BASE_URL', isRouter: true,
+        keyLabel: '9Router Endpoint API Key', placeholder: 'Paste the key from your 9Router dashboard',
+        keyHint: 'Create or copy an endpoint key from the 9Router dashboard.',
+        baseUrlPlaceholder: 'https://your-9router.example.com/v1',
+        baseUrlHint: 'Enter the reachable OpenAI-compatible URL ending in /v1. From Railway, prefer the router service’s private URL instead of localhost. ',
+        modelPlaceholder: 'e.g. cc/claude-sonnet-4-6 or a combo name',
+        modelHint: 'Use an exact model or combo shown by 9Router’s /v1/models endpoint.',
+        docsUrl: 'https://docs.9router.com/',
+      },
+      'OmniRoute':            {
+        key: 'OMNIROUTE_API_KEY', modelKey: '_MODEL_OMNIROUTE_API_KEY',
+        baseUrlKey: 'OMNIROUTE_BASE_URL', isRouter: true, defaultModel: 'auto',
+        keyLabel: 'OmniRoute Endpoint API Key', placeholder: 'Paste the key from Dashboard → Endpoints',
+        keyHint: 'Create or copy an endpoint key from OmniRoute Dashboard → Endpoints.',
+        baseUrlPlaceholder: 'https://your-omniroute.example.com/v1',
+        baseUrlHint: 'Enter the reachable OpenAI-compatible URL ending in /v1. From Railway, prefer the router service’s private URL instead of localhost. ',
+        modelPlaceholder: 'auto (recommended) or an exact model/combo',
+        modelHint: '“auto” uses OmniRoute’s smart routing; you can also enter an exact model or combo.',
+        docsUrl: 'https://github.com/diegosouzapw/OmniRoute#-quick-start',
+      },
       'Custom Endpoint':      { key: 'CUSTOM_PROVIDER_API_KEY',modelKey: '_MODEL_CUSTOM_PROVIDER_API_KEY',placeholder: '',         isCustom: true },
       'xAI Grok (SuperGrok)': { key: null,                     modelKey: '_MODEL_XAI_OAUTH',              isOauth: 'xai' },
     },
@@ -2284,9 +2330,11 @@ function app() {
         } else if (p.isCustom && this.vars[p.key]) {
           const displayName = this.vars.CUSTOM_PROVIDER_NAME || this.vars.CUSTOM_PROVIDER_BASE_URL || 'Custom Endpoint';
           list.push({ providerKey: name, name: displayName, model: p.modelKey ? (this.vars[p.modelKey] || '') : '', key: p.key, isCustom: true });
+        } else if (p.isRouter && this.vars[p.key] && this.vars[p.baseUrlKey]) {
+          list.push({ providerKey: name, name, model: p.modelKey ? (this.vars[p.modelKey] || '') : '', key: p.key, isRouter: true });
         } else if (p.isAzure && this.vars[p.key] && this.vars.AZURE_FOUNDRY_BASE_URL) {
           list.push({ providerKey: name, name, model: p.modelKey ? (this.vars[p.modelKey] || '') : '', key: p.key, isAzure: true });
-        } else if (p.key && !p.isCustom && !p.isAzure && this.vars[p.key]) {
+        } else if (p.key && !p.isCustom && !p.isAzure && !p.isRouter && this.vars[p.key]) {
           list.push({ providerKey: name, name, model: p.modelKey ? (this.vars[p.modelKey] || '') : '', key: p.key, modelKey: p.modelKey || null, isBedrock: !!p.isBedrock });
         }
       }
@@ -2312,6 +2360,8 @@ function app() {
       // Load the per-provider stored model so the model field pre-fills.
       const storedModel = p.modelKey ? this.vars[p.modelKey] : null;
       if (storedModel) this.vars.LLM_MODEL = storedModel;
+      else if (p.defaultModel) this.vars.LLM_MODEL = p.defaultModel;
+      else if (p.isRouter) this.vars.LLM_MODEL = '';
       // Reset xAI flow state if switching away (unless already fully authorized).
       if (p.isOauth !== 'xai' && this.xai.status !== 'authorized') {
         this.xai.status = 'none';
@@ -2341,6 +2391,9 @@ function app() {
       }
       if (p.isAzure) {
         this.vars.AZURE_FOUNDRY_BASE_URL = '';
+      }
+      if (p.isRouter && p.baseUrlKey) {
+        this.vars[p.baseUrlKey] = '';
       }
       if (this.selectedProvider === providerKey) this.selectedProvider = '';
       try {

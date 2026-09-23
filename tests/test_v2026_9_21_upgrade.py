@@ -18,6 +18,7 @@ import zipfile
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import yaml
 from starlette.datastructures import UploadFile
 from starlette.responses import FileResponse, JSONResponse
 
@@ -306,6 +307,209 @@ class BackupEndpointTests(UpgradeServerMixin, unittest.IsolatedAsyncioTestCase):
         self.assertIn("restore aborted", json.loads(response.body)["error"].lower())
         self.server.gw.stop.assert_not_awaited()
         self.server.dash.stop.assert_not_awaited()
+
+
+class RouterProviderConfigTests(UpgradeServerMixin, unittest.TestCase):
+    def _config(self):
+        return yaml.safe_load((self.home / "config.yaml").read_text(encoding="utf-8"))
+
+    def test_both_routers_are_named_providers_and_preserve_existing_entries(self):
+        (self.home / "config.yaml").write_text(
+            yaml.safe_dump({
+                "model": {},
+                "providers": {
+                    "corp-gateway": {
+                        "api": "https://corp.example/v1",
+                        "key_env": "CORP_GATEWAY_KEY",
+                    },
+                    "ninerouter": {
+                        "api": "https://old.example/v1",
+                        "key_env": "NINEROUTER_API_KEY",
+                        "extra_headers": {"X-Team": "agents"},
+                    },
+                },
+                "mcp_servers": {"keep-me": {"command": "example"}},
+            }),
+            encoding="utf-8",
+        )
+        data = {
+            "LLM_MODEL": "cc/claude-sonnet-4-6",
+            "NINEROUTER_API_KEY": "nine-secret",
+            "NINEROUTER_BASE_URL": "http://9router.railway.internal:20128/v1/",
+            "OMNIROUTE_API_KEY": "omni-secret",
+            "OMNIROUTE_BASE_URL": "http://omniroute.railway.internal:20128/v1",
+        }
+
+        self.server.write_config_yaml(data)
+        cfg = self._config()
+
+        self.assertEqual(cfg["model"]["provider"], "ninerouter")
+        self.assertEqual(cfg["providers"]["ninerouter"]["api"], "http://9router.railway.internal:20128/v1")
+        self.assertEqual(cfg["providers"]["ninerouter"]["key_env"], "NINEROUTER_API_KEY")
+        self.assertEqual(cfg["providers"]["ninerouter"]["transport"], "chat_completions")
+        self.assertTrue(cfg["providers"]["ninerouter"]["discover_models"])
+        self.assertEqual(cfg["providers"]["ninerouter"]["extra_headers"], {"X-Team": "agents"})
+        self.assertEqual(cfg["providers"]["omniroute"]["key_env"], "OMNIROUTE_API_KEY")
+        self.assertIn("corp-gateway", cfg["providers"])
+        self.assertIn("keep-me", cfg["mcp_servers"])
+        serialized = (self.home / "config.yaml").read_text(encoding="utf-8")
+        self.assertNotIn("nine-secret", serialized)
+        self.assertNotIn("omni-secret", serialized)
+
+    def test_removing_managed_router_does_not_remove_other_providers(self):
+        self.server.write_config_yaml({
+            "LLM_MODEL": "auto",
+            "NINEROUTER_API_KEY": "nine-secret",
+            "NINEROUTER_BASE_URL": "https://nine.example/v1",
+            "OMNIROUTE_API_KEY": "omni-secret",
+            "OMNIROUTE_BASE_URL": "https://omni.example/v1",
+        })
+        cfg = self._config()
+        cfg["providers"]["manual"] = {
+            "api": "https://manual.example/v1",
+            "key_env": "MANUAL_KEY",
+        }
+        (self.home / "config.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
+
+        self.server.write_config_yaml({
+            "LLM_MODEL": "auto",
+            "OMNIROUTE_API_KEY": "omni-secret",
+            "OMNIROUTE_BASE_URL": "https://omni.example/v1",
+        })
+        updated = self._config()
+        self.assertNotIn("ninerouter", updated["providers"])
+        self.assertIn("omniroute", updated["providers"])
+        self.assertIn("manual", updated["providers"])
+
+    def test_blank_template_fields_do_not_delete_same_named_manual_provider(self):
+        (self.home / "config.yaml").write_text(
+            yaml.safe_dump({
+                "model": {"default": "manual-model", "provider": "ninerouter"},
+                "providers": {
+                    "ninerouter": {
+                        "name": "Manually managed",
+                        "api": "https://manual-nine.example/v1",
+                        "key_env": "MANUAL_NINE_KEY",
+                    }
+                },
+            }),
+            encoding="utf-8",
+        )
+        self.server.write_config_yaml({"LLM_MODEL": "manual-model"})
+        self.assertEqual(
+            self._config()["providers"]["ninerouter"]["key_env"],
+            "MANUAL_NINE_KEY",
+        )
+
+    def test_router_requires_both_key_and_base_url_for_setup_completion(self):
+        self.assertFalse(self.server.is_config_complete({
+            "LLM_MODEL": "auto",
+            "OMNIROUTE_API_KEY": "secret",
+        }))
+        self.assertTrue(self.server.is_config_complete({
+            "LLM_MODEL": "auto",
+            "OMNIROUTE_API_KEY": "secret",
+            "OMNIROUTE_BASE_URL": "https://omni.example/v1",
+        }))
+
+
+class RouterProviderEndpointTests(UpgradeServerMixin, unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        super().setUp()
+        self.server.guard = lambda _request: None
+
+    async def test_save_pins_named_router_without_putting_secret_in_request(self):
+        class Request:
+            async def json(_self):
+                return {
+                    "vars": {
+                        "LLM_MODEL": "cc/claude-sonnet-4-6",
+                        "NINEROUTER_API_KEY": "nine-secret",
+                        "NINEROUTER_BASE_URL": "https://nine.example/v1",
+                    },
+                    "_active_provider_key": "NINEROUTER_API_KEY",
+                    "_restart": False,
+                }
+
+        self.server.set_active_model_via_hermes = AsyncMock(return_value=None)
+        response = await self.server.api_config_put(Request())
+
+        self.assertEqual(response.status_code, 200)
+        self.server.set_active_model_via_hermes.assert_awaited_once_with(
+            "ninerouter",
+            "cc/claude-sonnet-4-6",
+            base_url="",
+            api_key="",
+        )
+        cfg = yaml.safe_load((self.home / "config.yaml").read_text(encoding="utf-8"))
+        self.assertEqual(cfg["providers"]["ninerouter"]["key_env"], "NINEROUTER_API_KEY")
+
+    async def test_invalid_router_url_is_rejected_before_persistence(self):
+        class Request:
+            async def json(_self):
+                return {
+                    "vars": {
+                        "LLM_MODEL": "auto",
+                        "OMNIROUTE_API_KEY": "omni-secret",
+                        "OMNIROUTE_BASE_URL": "omniroute:20128/v1",
+                    },
+                    "_active_provider_key": "OMNIROUTE_API_KEY",
+                    "_restart": False,
+                }
+
+        response = await self.server.api_config_put(Request())
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(self.server.ENV_FILE.exists())
+        self.assertIn("complete http:// or https:// URL", json.loads(response.body)["error"])
+
+    async def test_removing_active_router_clears_dangling_active_model(self):
+        existing = {
+            "LLM_MODEL": "minimax/MiniMax-M3",
+            "OMNIROUTE_API_KEY": "omni-secret",
+            "OMNIROUTE_BASE_URL": "https://omni.example/v1",
+            "_MODEL_OMNIROUTE_API_KEY": "minimax/MiniMax-M3",
+        }
+        self.server.write_env(self.server.ENV_FILE, existing)
+        self.server.write_config_yaml(existing)
+        cfg = yaml.safe_load((self.home / "config.yaml").read_text(encoding="utf-8"))
+        self.assertEqual(cfg["model"]["provider"], "omniroute")
+
+        class Request:
+            async def json(_self):
+                return {
+                    "vars": {
+                        "OMNIROUTE_API_KEY": "",
+                        "OMNIROUTE_BASE_URL": "",
+                        "_MODEL_OMNIROUTE_API_KEY": "",
+                    },
+                    "_active_provider_key": "",
+                    "_restart": False,
+                }
+
+        response = await self.server.api_config_put(Request())
+        self.assertEqual(response.status_code, 200)
+        env = self.server.read_env(self.server.ENV_FILE)
+        self.assertNotIn("LLM_MODEL", env)
+        self.assertNotIn("OMNIROUTE_API_KEY", env)
+        updated = yaml.safe_load((self.home / "config.yaml").read_text(encoding="utf-8"))
+        self.assertEqual(updated["model"], {"default": ""})
+        self.assertNotIn("omniroute", updated.get("providers", {}))
+
+
+class RouterProviderUiTests(unittest.TestCase):
+    def test_setup_page_has_separate_router_fields_and_help(self):
+        template = (ROOT / "templates" / "index.html").read_text(encoding="utf-8")
+        for expected in (
+            "'9Router'",
+            "'OmniRoute'",
+            "NINEROUTER_API_KEY",
+            "NINEROUTER_BASE_URL",
+            "OMNIROUTE_API_KEY",
+            "OMNIROUTE_BASE_URL",
+            "Dashboard → Endpoints",
+            "defaultModel: 'auto'",
+        ):
+            self.assertIn(expected, template)
 
 
 class ReleasePinTests(unittest.TestCase):
